@@ -1,0 +1,22 @@
+﻿# Build artifacts
+artifacts/
+**/bin/
+**/obj/
+*.user
+*.suo
+.vs/
+
+# Runtime
+.dotnet-home/
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# IDE
+.idea/
+.vscode/
+
+# Temp
+*.tmp
+*.log
