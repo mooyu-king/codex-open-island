@@ -46,7 +46,7 @@ var tests = new (string Name, Action Body)[]
     ("codex function output maps to tool done", () => AssertEqual(ProjectSignal.ToolDone, ProjectSignalMapper.FromEvent("custom_tool_call_output"))),
     ("codex task started maps to thinking", () => AssertEqual(ProjectSignal.Thinking, ProjectSignalMapper.FromEvent("task_started"))),
     ("active codex turn stays working", AssertActiveTurnStaysWorking),
-    ("completed transition bounces once", AssertCompletionBounce)
+    ("completed and permission trigger persistent bounce", AssertPersistentBounce)
 };
 
 var failures = 0;
@@ -66,14 +66,23 @@ foreach (var test in tests)
 
 return failures == 0 ? 0 : 1;
 
-static void AssertCompletionBounce()
+static void AssertPersistentBounce()
 {
     var detector = new CompletionTransitionDetector();
-    AssertFalse(detector.ShouldBounce(ProjectSignal.Working), "working should not bounce");
-    AssertTrue(detector.ShouldBounce(ProjectSignal.Completed), "first completed should bounce");
-    AssertFalse(detector.ShouldBounce(ProjectSignal.Completed), "same completed state should not bounce again");
-    AssertFalse(detector.ShouldBounce(ProjectSignal.Ready), "ready should not bounce");
-    AssertTrue(detector.ShouldBounce(ProjectSignal.Completed), "new transition into completed should bounce");
+    AssertFalse(detector.ShouldStartPersistentBounce(ProjectSignal.Completed), "startup completed should not bounce");
+    AssertFalse(detector.ShouldStartPersistentBounce(ProjectSignal.Completed), "same completed should not bounce again");
+    AssertFalse(detector.ShouldStartPersistentBounce(ProjectSignal.Working), "working should not bounce");
+    AssertTrue(detector.ShouldStartPersistentBounce(ProjectSignal.Completed), "transition into completed should bounce");
+    AssertFalse(detector.ShouldStartPersistentBounce(ProjectSignal.Ready), "ready should not bounce");
+    AssertTrue(detector.ShouldStartPersistentBounce(ProjectSignal.Completed), "new transition after ack should bounce");
+
+    detector = new CompletionTransitionDetector();
+    AssertFalse(detector.ShouldStartPersistentBounce(ProjectSignal.Permission), "startup permission should not bounce");
+    AssertFalse(detector.ShouldStartPersistentBounce(ProjectSignal.Permission), "same permission should not bounce again");
+    AssertFalse(detector.ShouldStartPersistentBounce(ProjectSignal.Working), "working should not bounce");
+    AssertTrue(detector.ShouldStartPersistentBounce(ProjectSignal.Permission), "transition into permission should bounce");
+    detector.Acknowledge(ProjectSignal.Working);
+    AssertTrue(detector.ShouldStartPersistentBounce(ProjectSignal.Permission), "permission after ack should bounce");
 }
 
 static void AssertActiveTurnStaysWorking()
@@ -81,12 +90,22 @@ static void AssertActiveTurnStaysWorking()
     var originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE");
     var tempRoot = Path.Combine(Path.GetTempPath(), "codex-island-tests", Guid.NewGuid().ToString("N"));
     var sessionDirectory = Path.Combine(tempRoot, ".codex", "sessions", "2026", "06", "21");
+    var codexDirectory = Path.Combine(tempRoot, ".codex");
     Directory.CreateDirectory(sessionDirectory);
+    Directory.CreateDirectory(codexDirectory);
 
     try
     {
         var now = DateTimeOffset.UtcNow;
         var sessionFile = Path.Combine(sessionDirectory, "rollout-test.jsonl");
+        File.WriteAllText(
+            Path.Combine(codexDirectory, ".codex-global-state.json"),
+            """
+            {
+              "project-order": ["D:/demo/workspace"],
+              "active-workspace-roots": ["D:/demo/workspace"]
+            }
+            """);
         File.WriteAllLines(sessionFile, new[]
         {
             JsonSerializer.Serialize(new

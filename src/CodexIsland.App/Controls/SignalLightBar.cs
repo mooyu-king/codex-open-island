@@ -19,6 +19,13 @@ public sealed class SignalLightBar : FrameworkElement
             typeof(SignalLightBar),
             new FrameworkPropertyMetadata(ProjectSignal.Ready, FrameworkPropertyMetadataOptions.AffectsRender, OnSignalChanged));
 
+    public static readonly DependencyProperty ForceFastBlinkProperty =
+        DependencyProperty.Register(
+            nameof(ForceFastBlink),
+            typeof(bool),
+            typeof(SignalLightBar),
+            new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsRender, OnSignalChanged));
+
     private readonly DispatcherTimer _timer = new();
     private bool _blinkOn = true;
 
@@ -36,6 +43,12 @@ public sealed class SignalLightBar : FrameworkElement
     {
         get => (ProjectSignal)GetValue(SignalProperty);
         set => SetValue(SignalProperty, value);
+    }
+
+    public bool ForceFastBlink
+    {
+        get => (bool)GetValue(ForceFastBlinkProperty);
+        set => SetValue(ForceFastBlinkProperty, value);
     }
 
     protected override WpfSize MeasureOverride(WpfSize availableSize) => new(110, 34);
@@ -80,7 +93,7 @@ public sealed class SignalLightBar : FrameworkElement
     {
         _timer.Stop();
         _blinkOn = true;
-        var effect = BlinkEffectFor(Signal);
+        var effect = ForceFastBlink ? BlinkEffect.Fast : BlinkEffectFor(Signal);
         if (effect == BlinkEffect.Fast)
         {
             _timer.Interval = TimeSpan.FromMilliseconds(320);
@@ -103,7 +116,9 @@ public sealed class SignalLightBar : FrameworkElement
     {
         return signal switch
         {
-            ProjectSignal.Permission or ProjectSignal.Blocked => Light.Red,
+            ProjectSignal.Permission => Light.Yellow,
+            ProjectSignal.Blocked => Light.Red,
+            ProjectSignal.Working => Light.Yellow,
             ProjectSignal.Attention or ProjectSignal.Stale => Light.Yellow,
             ProjectSignal.Paused => Light.Off,
             _ => Light.Green

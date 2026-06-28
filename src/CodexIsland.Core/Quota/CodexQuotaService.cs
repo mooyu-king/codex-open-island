@@ -8,6 +8,7 @@ namespace CodexIsland.Core.Quota;
 public sealed class CodexQuotaService : IQuotaService
 {
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(12);
+    private static readonly TimeSpan SessionScanWindow = TimeSpan.FromDays(14);
 
     public async Task<QuotaSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
@@ -32,14 +33,24 @@ public sealed class CodexQuotaService : IQuotaService
             using var result = await client.SendAsync("account/rateLimits/read", null, timeout.Token)
                 .ConfigureAwait(false);
 
-            return Normalize(result.RootElement);
+            var normalized = Normalize(result.RootElement);
+            return normalized.Health == QuotaHealth.Error
+                ? TryReadSessionRateLimits() ?? normalized
+                : normalized;
         }
         catch (OperationCanceledException)
         {
-            return QuotaSnapshot.Error("Codex quota request timed out.", "timeout");
+            return TryReadSessionRateLimits()
+                   ?? QuotaSnapshot.Error("Codex quota request timed out.", "timeout");
         }
         catch (Exception ex)
         {
+            var fallback = TryReadSessionRateLimits();
+            if (fallback is not null)
+            {
+                return fallback;
+            }
+
             if (ex.Message.Contains("authentication required", StringComparison.OrdinalIgnoreCase) ||
                 ex.Message.Contains("not logged in", StringComparison.OrdinalIgnoreCase))
             {
@@ -181,6 +192,122 @@ public sealed class CodexQuotaService : IQuotaService
             health);
     }
 
+    private static QuotaSnapshot? TryReadSessionRateLimits()
+    {
+        try
+        {
+            var sessionRoot = Path.Combine(ResolveUserHome(), ".codex", "sessions");
+            if (!Directory.Exists(sessionRoot))
+            {
+                return null;
+            }
+
+            SessionRateLimitSnapshot? latest = null;
+            foreach (var file in Directory
+                         .EnumerateFiles(sessionRoot, "*.jsonl", SearchOption.AllDirectories)
+                         .Select(path => new FileInfo(path))
+                         .Where(file => DateTimeOffset.Now - file.LastWriteTimeUtc <= SessionScanWindow)
+                         .OrderByDescending(file => file.LastWriteTimeUtc)
+                         .Take(64))
+            {
+                foreach (var line in ReadLinesShared(file.FullName))
+                {
+                    var candidate = TryReadSessionRateLimit(line);
+                    if (candidate is null)
+                    {
+                        continue;
+                    }
+
+                    if (latest is null || candidate.Timestamp > latest.Timestamp)
+                    {
+                        latest = candidate;
+                    }
+                }
+            }
+
+            if (latest is null || latest.PrimaryUsedPercent is null)
+            {
+                return null;
+            }
+
+            var remainingPercent = Math.Clamp(100 - latest.PrimaryUsedPercent.Value, 0, 100);
+            var weeklyRemainingPercent = latest.WeeklyUsedPercent is int weeklyUsed
+                ? Math.Clamp(100 - weeklyUsed, 0, 100)
+                : (int?)null;
+
+            return new QuotaSnapshot(
+                latest.LimitId ?? "codex",
+                latest.LimitName ?? "Codex",
+                latest.PlanType ?? "unknown",
+                remainingPercent,
+                latest.PrimaryUsedPercent,
+                latest.ResetsAt,
+                weeklyRemainingPercent,
+                latest.WeeklyUsedPercent,
+                latest.WeeklyResetsAt,
+                latest.Timestamp.ToLocalTime(),
+                QuotaHealthMapper.FromRemainingPercent(remainingPercent));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static SessionRateLimitSnapshot? TryReadSessionRateLimit(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            var payload = TryGetProperty(root, "payload");
+            if (payload is not JsonElement payloadElement ||
+                !string.Equals(TryGetString(payloadElement, "type"), "token_count", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var rateLimits = TryGetProperty(payloadElement, "rate_limits");
+            if (rateLimits is not JsonElement rateLimitElement || rateLimitElement.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            var primary = TryGetProperty(rateLimitElement, "primary");
+            var secondary = TryGetProperty(rateLimitElement, "secondary");
+            var primaryUsed = primary is JsonElement primaryElement ? TryGetDouble(primaryElement, "used_percent") : null;
+            var weeklyUsed = secondary is JsonElement secondaryElement ? TryGetDouble(secondaryElement, "used_percent") : null;
+
+            if (primaryUsed is null && weeklyUsed is null)
+            {
+                return null;
+            }
+
+            var timestamp = TryGetDate(root, "timestamp")
+                            ?? TryGetDate(payloadElement, "timestamp")
+                            ?? DateTimeOffset.Now;
+
+            return new SessionRateLimitSnapshot(
+                timestamp,
+                TryGetString(rateLimitElement, "limit_id"),
+                TryGetString(rateLimitElement, "limit_name"),
+                TryGetString(rateLimitElement, "plan_type"),
+                primaryUsed is double primaryValue ? QuotaHealthMapper.ClampPercent(primaryValue) : null,
+                primary is JsonElement primaryWindow ? TryGetUnixSeconds(primaryWindow, "resets_at") : null,
+                weeklyUsed is double weeklyValue ? QuotaHealthMapper.ClampPercent(weeklyValue) : null,
+                secondary is JsonElement secondaryWindow ? TryGetUnixSeconds(secondaryWindow, "resets_at") : null);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static JsonElement? TryGetCodexSnapshot(JsonElement root)
     {
         if (TryGetProperty(root, "rateLimitsByLimitId") is JsonElement byId)
@@ -233,6 +360,49 @@ public sealed class CodexQuotaService : IQuotaService
         }
 
         return null;
+    }
+
+    private static DateTimeOffset? TryGetDate(JsonElement element, string name)
+    {
+        if (TryGetProperty(element, name) is not JsonElement value ||
+            value.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        return DateTimeOffset.TryParse(value.GetString(), out var parsed)
+            ? parsed
+            : null;
+    }
+
+    private static string ResolveUserHome()
+    {
+        var home = Environment.GetEnvironmentVariable("USERPROFILE");
+        if (!string.IsNullOrWhiteSpace(home))
+        {
+            return home;
+        }
+
+        return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    }
+
+    private static IEnumerable<string> ReadLinesShared(string path)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(stream, Encoding.UTF8, true);
+
+        while (!reader.EndOfStream)
+        {
+            var line = reader.ReadLine();
+            if (line is not null)
+            {
+                yield return line;
+            }
+        }
     }
 
     private sealed class StdioJsonRpcClient : IDisposable
@@ -383,4 +553,14 @@ public sealed class CodexQuotaService : IQuotaService
             _process.Dispose();
         }
     }
+
+    private sealed record SessionRateLimitSnapshot(
+        DateTimeOffset Timestamp,
+        string? LimitId,
+        string? LimitName,
+        string? PlanType,
+        int? PrimaryUsedPercent,
+        DateTimeOffset? ResetsAt,
+        int? WeeklyUsedPercent,
+        DateTimeOffset? WeeklyResetsAt);
 }

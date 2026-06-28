@@ -43,10 +43,12 @@ public sealed class StatusDot : FrameworkElement
     {
         var color = Signal switch
         {
-            ProjectSignal.Permission or ProjectSignal.Blocked => "#FF453A",
+            ProjectSignal.Permission => "#FFD60A",
+            ProjectSignal.Blocked => "#FF453A",
+            ProjectSignal.Working => "#FFD60A",
             ProjectSignal.Attention or ProjectSignal.Stale => "#FFD60A",
             ProjectSignal.Paused => "#4B525C",
-            ProjectSignal.Thinking or ProjectSignal.Working or ProjectSignal.ToolDone => "#32D74B",
+            ProjectSignal.Thinking or ProjectSignal.ToolDone => "#32D74B",
             ProjectSignal.Completed or ProjectSignal.Ready => "#32D74B",
             _ => "#8E8E93"
         };

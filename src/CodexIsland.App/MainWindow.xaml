@@ -15,6 +15,7 @@
         ShowInTaskbar="False"
         Topmost="True"
         Background="Transparent"
+        PreviewMouseLeftButtonDown="Window_PreviewMouseLeftButtonDown"
         MouseEnter="Window_MouseEnter"
         MouseLeave="Window_MouseLeave">
     <Window.Resources>
@@ -196,6 +197,7 @@
 
                     <controls:SignalLightBar Grid.Column="0"
                                              Signal="{Binding CurrentSignal}"
+                                             ForceFastBlink="{Binding CurrentSignalForceFastBlink}"
                                              Margin="0,0,8,0"
                                              VerticalAlignment="Center"/>
 
@@ -369,23 +371,40 @@
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
 
-                            <StackPanel Grid.ColumnSpan="2" Orientation="Horizontal">
-                                <Ellipse Width="12" Height="12" Fill="{Binding QuotaBrush}" Margin="0,3,9,0">
-                                    <Ellipse.Effect>
-                                        <DropShadowEffect BlurRadius="12" ShadowDepth="0" Color="#FF6B7B" Opacity="0.78"/>
-                                    </Ellipse.Effect>
-                                </Ellipse>
-                                <StackPanel>
-                                    <TextBlock Text="Codex quota"
-                                               Foreground="#F2F2F7"
-                                               FontSize="12"
-                                               FontWeight="SemiBold"/>
-                                    <TextBlock Text="{Binding QuotaCaption}"
-                                               Foreground="{Binding QuotaBrush}"
-                                               FontSize="9"
-                                               FontWeight="SemiBold"/>
+                            <Grid Grid.ColumnSpan="2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                    <Ellipse Width="12" Height="12" Fill="{Binding QuotaBrush}" Margin="0,3,9,0">
+                                        <Ellipse.Effect>
+                                            <DropShadowEffect BlurRadius="12" ShadowDepth="0" Color="#FF6B7B" Opacity="0.78"/>
+                                        </Ellipse.Effect>
+                                    </Ellipse>
+                                    <StackPanel>
+                                        <TextBlock Text="Codex quota"
+                                                   Foreground="#F2F2F7"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding QuotaCaption}"
+                                                   Foreground="{Binding QuotaBrush}"
+                                                   FontSize="9"
+                                                   FontWeight="SemiBold"/>
+                                    </StackPanel>
                                 </StackPanel>
-                            </StackPanel>
+
+                                <Button Grid.Column="1"
+                                        Content="&#xE72C;"
+                                        Command="{Binding RefreshQuotaCommand}"
+                                        Style="{StaticResource RoundIconButton}"
+                                        Width="20"
+                                        Height="20"
+                                        Margin="8,0,0,0"
+                                        VerticalAlignment="Top"
+                                        ToolTip="Refresh quota"/>
+                            </Grid>
 
                             <Grid Grid.Row="1" Grid.RowSpan="2"
                                   Grid.Column="0"
@@ -394,6 +413,19 @@
                                   VerticalAlignment="Center">
                                 <controls:QuotaSphereControl RemainingPercent="{Binding RemainingPercent}"
                                                              Health="{Binding QuotaHealth}"/>
+                                <Border HorizontalAlignment="Center"
+                                        VerticalAlignment="Top"
+                                        Margin="0,7,0,0"
+                                        Padding="5,1"
+                                        Background="#1E2228"
+                                        BorderBrush="#3A4048"
+                                        BorderThickness="1"
+                                        CornerRadius="7">
+                                    <TextBlock Text="5h"
+                                               Foreground="#DCE4EE"
+                                               FontSize="8"
+                                               FontWeight="SemiBold"/>
+                                </Border>
                                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                                     <TextBlock Text="{Binding RemainingText}"
                                                Foreground="#FFFFFF"
@@ -452,6 +484,27 @@
                             </StackPanel>
                         </Grid>
                     </Border>
+
+                    <Grid Margin="8,0,8,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Text="Recent projects"
+                                   Foreground="#F2F2F7"
+                                   FontSize="11"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"/>
+
+                        <Button Grid.Column="1"
+                                Content="&#xE72C;"
+                                Command="{Binding RefreshProjectsCommand}"
+                                Style="{StaticResource RoundIconButton}"
+                                Width="20"
+                                Height="20"
+                                ToolTip="Refresh projects"/>
+                    </Grid>
 
                     <ScrollViewer Margin="8,0,8,8"
                                   MaxHeight="272"

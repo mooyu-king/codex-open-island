@@ -55,18 +55,16 @@ public sealed class LocalProjectSignalService : IProjectSignalService
         }
 
         items.AddRange(ReadThreadsFromStateDb(Math.Max(maxCount * 10, 32), workspaceState));
-
-        if (items.Count == 0)
-        {
-            items.AddRange(ReadThreadsFromSessionLogs(Math.Max(maxCount * 12, 48), workspaceState));
-        }
+        items.AddRange(ReadThreadsFromSessionLogs(Math.Max(maxCount * 12, 48), workspaceState));
 
         return items
             .Where(item => !string.IsNullOrWhiteSpace(item.WorkingDirectory))
-            .GroupBy(item => item.ProjectId, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(
+                item => string.IsNullOrWhiteSpace(item.ProjectRoot) ? item.ProjectId : item.ProjectRoot!,
+                StringComparer.OrdinalIgnoreCase)
             .Select(group => group.OrderByDescending(item => item.UpdatedAt).First())
-            .OrderBy(item => ProjectSortKey(item, workspaceState))
-            .ThenByDescending(item => item.UpdatedAt)
+            .OrderByDescending(item => item.UpdatedAt)
+            .ThenBy(item => ProjectSortKey(item, workspaceState))
             .Take(maxCount)
             .ToList();
     }
@@ -339,24 +337,7 @@ sys.stdout.write(json.dumps(payload))
 
     private static string? RunPythonJson(string script, params string[] arguments)
     {
-        var candidates = new[]
-        {
-            ResolveOnPath("python.exe"),
-            ResolveOnPath("py.exe"),
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Microsoft",
-                "WindowsApps",
-                "python.exe"),
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Microsoft",
-                "WindowsApps",
-                "py.exe")
-        }
-        .Where(path => !string.IsNullOrWhiteSpace(path))
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .ToList();
+        var candidates = EnumeratePythonCommands().ToList();
 
         foreach (var command in candidates)
         {
@@ -417,6 +398,59 @@ sys.stdout.write(json.dumps(payload))
         return null;
     }
 
+    private static IEnumerable<string> EnumeratePythonCommands()
+    {
+        var localAppDataCandidates = new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            Path.Combine(ResolveUserHome(), "AppData", "Local")
+        }
+        .Where(path => !string.IsNullOrWhiteSpace(path))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+        foreach (var candidate in new[] { ResolveOnPath("python.exe"), ResolveOnPath("py.exe") })
+        {
+            if (!string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate))
+            {
+                yield return candidate;
+            }
+        }
+
+        foreach (var localAppData in localAppDataCandidates)
+        {
+            foreach (var candidate in new[]
+                     {
+                         Path.Combine(localAppData, "Programs", "Python", "Python312", "python.exe"),
+                         Path.Combine(localAppData, "Programs", "Python", "Python311", "python.exe"),
+                         Path.Combine(localAppData, "Programs", "Python", "Python310", "python.exe"),
+                         Path.Combine(localAppData, "Programs", "Python", "Python39", "python.exe"),
+                         Path.Combine(localAppData, "Programs", "Python", "Python38", "python.exe"),
+                         Path.Combine(localAppData, "Microsoft", "WindowsApps", "python.exe"),
+                         Path.Combine(localAppData, "Microsoft", "WindowsApps", "py.exe")
+                     })
+            {
+                if (File.Exists(candidate))
+                {
+                    yield return candidate;
+                }
+            }
+
+            var pythonRoot = Path.Combine(localAppData, "Programs", "Python");
+            if (!Directory.Exists(pythonRoot))
+            {
+                continue;
+            }
+
+            foreach (var path in Directory.EnumerateDirectories(pythonRoot, "Python*")
+                         .Select(dir => Path.Combine(dir, "python.exe"))
+                         .Where(File.Exists))
+            {
+                yield return path;
+            }
+        }
+    }
+
     private static string? ResolveOnPath(string fileName)
     {
         var path = Environment.GetEnvironmentVariable("PATH");
@@ -453,7 +487,7 @@ sys.stdout.write(json.dumps(payload))
         try
         {
             var tail = new Queue<string>();
-            foreach (var line in File.ReadLines(path))
+            foreach (var line in ReadLinesShared(path))
             {
                 if (tail.Count == 160)
                 {
@@ -492,7 +526,7 @@ sys.stdout.write(json.dumps(payload))
 
         try
         {
-            foreach (var line in File.ReadLines(path))
+            foreach (var line in ReadLinesShared(path))
             {
                 ApplySessionMetadata(line, ref threadId, ref cwd, ref title, ref isSubagent);
             }
@@ -953,6 +987,25 @@ sys.stdout.write(json.dumps(payload))
         }
 
         return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    }
+
+    private static IEnumerable<string> ReadLinesShared(string path)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(stream, Encoding.UTF8, true);
+
+        while (!reader.EndOfStream)
+        {
+            var line = reader.ReadLine();
+            if (line is not null)
+            {
+                yield return line;
+            }
+        }
     }
 
     private sealed record ThreadRow(

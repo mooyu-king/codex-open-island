@@ -16,15 +16,18 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _projectRefreshTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly DispatcherTimer _quotaRefreshTimer = new() { Interval = TimeSpan.FromSeconds(45) };
     private readonly DispatcherTimer _fadeTimer = new() { Interval = TimeSpan.FromSeconds(12) };
+    private readonly DispatcherTimer _bounceStopTimer = new();
     private readonly Forms.NotifyIcon _notifyIcon;
     private bool _isExitRequested;
+    private bool _isBouncing;
 
     public MainWindow()
     {
         InitializeComponent();
         _viewModel = new MainViewModel(new CodexQuotaService(), new LocalProjectSignalService());
         DataContext = _viewModel;
-        _viewModel.BounceRequested += (_, _) => BounceIsland();
+        _viewModel.PulseRequested += (_, e) => StartTransientBounce(e.Duration);
+        _viewModel.BounceAcknowledged += (_, _) => StopPersistentBounce();
 
         _projectRefreshTimer.Tick += async (_, _) => await _viewModel.RefreshProjectAsync().ConfigureAwait(true);
         _quotaRefreshTimer.Tick += async (_, _) => await _viewModel.RefreshQuotaAsync().ConfigureAwait(true);
@@ -32,6 +35,11 @@ public partial class MainWindow : Window
         {
             _fadeTimer.Stop();
             Opacity = 0.42;
+        };
+        _bounceStopTimer.Tick += (_, _) =>
+        {
+            _bounceStopTimer.Stop();
+            StopPersistentBounce();
         };
 
         _notifyIcon = CreateTrayIcon();
@@ -101,14 +109,33 @@ public partial class MainWindow : Window
         return System.Drawing.Icon.FromHandle(bmp.GetHicon());
     }
 
-    private void ShowIsland()
+    public void PresentFromExternalActivation()
     {
         Dispatcher.Invoke(() =>
         {
+            var wasTopmost = Topmost;
+            Opacity = 1;
             Show();
             WindowState = WindowState.Normal;
+            if (!wasTopmost)
+            {
+                Topmost = true;
+            }
             Activate();
+            if (!wasTopmost)
+            {
+                Topmost = false;
+            }
+            if (_viewModel.IsExpanded is false)
+            {
+                _viewModel.IsExpanded = true;
+            }
         });
+    }
+
+    private void ShowIsland()
+    {
+        PresentFromExternalActivation();
     }
 
     private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
@@ -144,6 +171,14 @@ public partial class MainWindow : Window
         catch
         {
             // DragMove can throw if the mouse button is released during startup.
+        }
+    }
+
+    private void Window_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_isBouncing)
+        {
+            _viewModel.AcknowledgeBounce();
         }
     }
 
@@ -224,20 +259,54 @@ public partial class MainWindow : Window
         PinButton.ToolTip = Topmost ? "Always on top (on)" : "Always on top (off)";
     }
 
-    private void BounceIsland()
+    private void StartTransientBounce(TimeSpan totalDuration)
     {
-        var ease = new BackEase { Amplitude = 0.28, EasingMode = EasingMode.EaseOut };
-        var scaleX = new DoubleAnimation(1.055, TimeSpan.FromMilliseconds(210))
+        _bounceStopTimer.Stop();
+        _bounceStopTimer.Interval = totalDuration;
+
+        if (!_isBouncing)
         {
-            EasingFunction = ease,
-            AutoReverse = true
-        };
-        var scaleY = new DoubleAnimation(1.055, TimeSpan.FromMilliseconds(210))
-        {
-            EasingFunction = ease,
-            AutoReverse = true
-        };
-        IslandScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, scaleX);
-        IslandScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, scaleY);
+            _isBouncing = true;
+
+            // Pop the island to front.
+            Dispatcher.Invoke(() =>
+            {
+                Topmost = true;
+                Show();
+                WindowState = WindowState.Normal;
+                Activate();
+            });
+
+            var ease = new BackEase { Amplitude = 0.28, EasingMode = EasingMode.EaseOut };
+            var duration = TimeSpan.FromMilliseconds(420);
+            var scaleX = new DoubleAnimation(1.0, 1.058, duration)
+            {
+                EasingFunction = ease,
+                AutoReverse = true,
+                RepeatBehavior = RepeatBehavior.Forever
+            };
+            var scaleY = new DoubleAnimation(1.0, 1.058, duration)
+            {
+                EasingFunction = ease,
+                AutoReverse = true,
+                RepeatBehavior = RepeatBehavior.Forever
+            };
+            IslandScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, scaleX);
+            IslandScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, scaleY);
+        }
+
+        _bounceStopTimer.Start();
+    }
+
+    private void StopPersistentBounce()
+    {
+        if (!_isBouncing) return;
+        _isBouncing = false;
+        _bounceStopTimer.Stop();
+
+        IslandScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, null);
+        IslandScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, null);
+        IslandScale.ScaleX = 1.0;
+        IslandScale.ScaleY = 1.0;
     }
 }
