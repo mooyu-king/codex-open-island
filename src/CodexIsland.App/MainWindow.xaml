@@ -197,6 +197,7 @@
 
                     <controls:SignalLightBar Grid.Column="0"
                                              Signal="{Binding CurrentSignal}"
+                                             Animate="{Binding CurrentSignalAnimate}"
                                              ForceFastBlink="{Binding CurrentSignalForceFastBlink}"
                                              Margin="0,0,8,0"
                                              VerticalAlignment="Center"/>
@@ -535,7 +536,10 @@
                                                 <ColumnDefinition Width="Auto"/>
                                             </Grid.ColumnDefinitions>
 
-                                            <controls:StatusDot Signal="{Binding Signal}" VerticalAlignment="Center"/>
+                                            <controls:StatusDot Signal="{Binding Signal}"
+                                                                Animate="{Binding AnimateStatus}"
+                                                                ForceFastBlink="{Binding ForceFastBlink}"
+                                                                VerticalAlignment="Center"/>
 
                                             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                                                 <TextBlock Text="{Binding Title}"

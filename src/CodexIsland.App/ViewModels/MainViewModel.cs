@@ -19,12 +19,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly IProjectSignalService _projectSignalService;
     private readonly SystemStatsService _systemStatsService = new();
     private readonly CompletionTransitionDetector _completionTransitionDetector = new();
-    private CancellationTokenSource? _signalPulseCts;
     private bool _projectRefreshInFlight;
     private bool _quotaRefreshInFlight;
     private bool _isBusy;
     private bool _isExpanded = true;
-    private bool _currentSignalForceFastBlink;
+    private bool _startupNeutralMode = true;
+    private bool _hasStartupBaseline;
+    private bool _alertBounceActive;
+    private ProjectSignal _startupBaselineSignal = ProjectSignal.Ready;
+    private string? _startupBaselineProjectRoot;
     private string _cpuText = "CPU --%";
     private string _ramText = "RAM --%";
     private string _gpuText = "GPU --";
@@ -47,7 +50,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         RefreshProjectsCommand = new RelayCommand(() => _ = RefreshProjectAsync());
         ProjectItems = new ObservableCollection<ProjectItemViewModel>
         {
-            new("Codex project", ProjectSignal.Ready, "local monitor", "now", "Codex project\nlocal monitor", null, null, null, null)
+            new("Codex project", ProjectSignal.Ready, false, false, "local monitor", "now", "Codex project\nlocal monitor", null, null, null, null)
         };
 
         SwitchToModelCommand = new RelayCommand(profile => { if (profile is ModelProfile mp) ActiveModel = mp; });
@@ -59,8 +62,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
-    /// Fired when a transient island pulse should start.
-    public event EventHandler<SignalPulseEventArgs>? PulseRequested;
+    public event EventHandler? PersistentBounceRequested;
 
     /// Fired when the user clicks the island to acknowledge the bounce.
     public event EventHandler? BounceAcknowledged;
@@ -150,12 +152,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
         private set => SetField(ref _netTrafficText, value);
     }
 
-    public ProjectSignal CurrentSignal => _project.Signal;
-    public bool CurrentSignalForceFastBlink
-    {
-        get => _currentSignalForceFastBlink;
-        private set => SetField(ref _currentSignalForceFastBlink, value);
-    }
+    public ProjectSignal CurrentSignal => _startupNeutralMode ? ProjectSignal.Ready : _project.Signal;
+    public bool CurrentSignalAnimate => !_startupNeutralMode && ShouldAnimateSignal(_project.Signal);
+    public bool CurrentSignalForceFastBlink => !_startupNeutralMode &&
+                                               _alertBounceActive &&
+                                               (_project.Signal is ProjectSignal.Permission or ProjectSignal.Completed);
     public string ProjectStateText => ProjectSignalMapper.DisplayName(_project.Signal);
     public string ProjectMetaText => _project.LastEvent is null ? "local monitor" : _project.LastEvent;
     public string UpdatedText => $"updated {_quota.FetchedAt:HH:mm:ss}";
@@ -263,26 +264,38 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _projectRefreshInFlight = true;
         try
         {
-            var previousSignal = _project.Signal;
-            var snapshots = await Task.Run(() => _projectSignalService.GetRecentProjects())
-                .ConfigureAwait(true);
+            var snapshots = (await Task.Run(() => _projectSignalService.GetRecentProjects())
+                .ConfigureAwait(true))
+                .ToList();
+
+            var nextProject = AggregateProjectStatus(snapshots);
+            if (!_hasStartupBaseline)
+            {
+                _hasStartupBaseline = true;
+                _startupBaselineSignal = nextProject.Signal;
+                _startupBaselineProjectRoot = nextProject.ProjectRoot;
+            }
+            else if (_startupNeutralMode &&
+                     (nextProject.Signal != _startupBaselineSignal ||
+                      !string.Equals(nextProject.ProjectRoot, _startupBaselineProjectRoot, StringComparison.OrdinalIgnoreCase)))
+            {
+                _startupNeutralMode = false;
+            }
+
+            _project = nextProject;
+
+            if (!_startupNeutralMode &&
+                _completionTransitionDetector.ShouldStartPersistentBounce(_project.Signal))
+            {
+                _alertBounceActive = true;
+                PersistentBounceRequested?.Invoke(this, EventArgs.Empty);
+            }
+            else if (_project.Signal is not ProjectSignal.Permission and not ProjectSignal.Completed)
+            {
+                _alertBounceActive = false;
+            }
 
             RefreshProjectItems(snapshots);
-            _project = AggregateProjectStatus(snapshots);
-
-            if (previousSignal != _project.Signal)
-            {
-                if (_project.Signal == ProjectSignal.Working)
-                {
-                    _ = TriggerSignalPulseAsync(_project.Signal, TimeSpan.FromSeconds(1.8), false);
-                }
-            }
-
-            if (_completionTransitionDetector.ShouldStartPersistentBounce(_project.Signal))
-            {
-                _ = TriggerSignalPulseAsync(_project.Signal, TimeSpan.FromSeconds(3.2), true);
-            }
-
             RefreshProjectComputedProperties();
         }
         finally
@@ -345,6 +358,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         OnPropertyChanged(nameof(RunningCount));
         OnPropertyChanged(nameof(CurrentSignal));
+        OnPropertyChanged(nameof(CurrentSignalAnimate));
+        OnPropertyChanged(nameof(CurrentSignalForceFastBlink));
         OnPropertyChanged(nameof(ProjectStateText));
         OnPropertyChanged(nameof(ProjectMetaText));
         OnPropertyChanged(nameof(ProjectBrush));
@@ -377,14 +392,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private void RefreshProjectItems(IEnumerable<ProjectStatusSnapshot> snapshots)
     {
         ProjectItems.Clear();
+        var currentRoot = _project.ProjectRoot;
         foreach (var item in snapshots)
         {
+            var displaySignal = _startupNeutralMode ? ProjectSignal.Ready : item.Signal;
+            var animateStatus = !_startupNeutralMode &&
+                                string.Equals(item.ProjectRoot, currentRoot, StringComparison.OrdinalIgnoreCase) &&
+                                ShouldAnimateSignal(item.Signal);
+            var forceFastBlink = !_startupNeutralMode &&
+                                 _alertBounceActive &&
+                                 string.Equals(item.ProjectRoot, currentRoot, StringComparison.OrdinalIgnoreCase) &&
+                                 item.Signal is ProjectSignal.Permission or ProjectSignal.Completed;
             var title = ProjectListTitle(item);
             var detail = ProjectSignalMapper.DisplayName(item.Signal);
             var updated = RelativeTime(item.UpdatedAt);
             ProjectItems.Add(new ProjectItemViewModel(
                 title,
-                item.Signal,
+                displaySignal,
+                animateStatus,
+                forceFastBlink,
                 string.IsNullOrWhiteSpace(item.DisplayName) ? detail : item.DisplayName,
                 updated,
                 $"{title}\n{item.DisplayName ?? item.ProjectName ?? "Codex project"}\n{detail}\n{item.LastEvent ?? "local monitor"}\nupdated {item.UpdatedAt:MM-dd HH:mm:ss}",
@@ -396,7 +422,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         if (ProjectItems.Count == 0)
         {
-            ProjectItems.Add(new ProjectItemViewModel("No Codex project", ProjectSignal.Ready, "waiting", "", "No Codex project", null, null, null, null));
+            ProjectItems.Add(new ProjectItemViewModel("No Codex project", ProjectSignal.Ready, false, false, "waiting", "", "No Codex project", null, null, null, null));
         }
 
         OnPropertyChanged(nameof(RunningCount));
@@ -419,35 +445,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void AcknowledgeBounce()
     {
-        _signalPulseCts?.Cancel();
-        CurrentSignalForceFastBlink = false;
+        _alertBounceActive = false;
         _completionTransitionDetector.Acknowledge(_project.Signal);
+        RefreshProjectItems(_projectSignalService.GetRecentProjects());
+        RefreshProjectComputedProperties();
         BounceAcknowledged?.Invoke(this, EventArgs.Empty);
-    }
-
-    private async Task TriggerSignalPulseAsync(ProjectSignal signal, TimeSpan duration, bool forceFastBlink)
-    {
-        _signalPulseCts?.Cancel();
-        _signalPulseCts = new CancellationTokenSource();
-        var token = _signalPulseCts.Token;
-
-        CurrentSignalForceFastBlink = forceFastBlink;
-        PulseRequested?.Invoke(this, new SignalPulseEventArgs(signal, duration));
-
-        try
-        {
-            await Task.Delay(duration, token).ConfigureAwait(true);
-        }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-
-        if (!token.IsCancellationRequested)
-        {
-            CurrentSignalForceFastBlink = false;
-            BounceAcknowledged?.Invoke(this, EventArgs.Empty);
-        }
     }
 
     public void OpenProject(ProjectItemViewModel? item)
@@ -458,14 +460,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (!string.IsNullOrWhiteSpace(targetPath) && Directory.Exists(targetPath))
         {
             if (TryOpenCodexDesktop(targetPath))
-            {
-                return;
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(item.ThreadId))
-        {
-            if (TryResumeCodexThread(item.ThreadId!, targetPath))
             {
                 return;
             }
@@ -482,57 +476,72 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private static bool TryOpenCodexDesktop(string targetPath)
     {
-        try
+        foreach (var startInfo in BuildCodexAppLaunchers(targetPath))
         {
-            Process.Start(new ProcessStartInfo
+            try
             {
-                FileName = "cmd.exe",
-                Arguments = $"/c start \"\" codex app {QuoteForCmd(targetPath)}",
-                UseShellExecute = true,
-                WorkingDirectory = Directory.Exists(targetPath) ? targetPath : Environment.CurrentDirectory
-            });
-            return true;
+                Process.Start(startInfo);
+                return true;
+            }
+            catch
+            {
+            }
         }
-        catch
-        {
-            return false;
-        }
+
+        return false;
     }
 
-    private static bool TryResumeCodexThread(string threadId, string? targetPath)
+    private static IEnumerable<ProcessStartInfo> BuildCodexAppLaunchers(string targetPath)
     {
-        try
+        yield return new ProcessStartInfo
         {
-            Process.Start(new ProcessStartInfo
+            FileName = "codex.exe",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Directory.Exists(targetPath) ? targetPath : Environment.CurrentDirectory,
+            Arguments = $"app {QuoteForProcess(targetPath)}"
+        };
+
+        var npmCmd = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "npm",
+            "codex.cmd");
+        if (File.Exists(npmCmd))
+        {
+            yield return new ProcessStartInfo
             {
                 FileName = "cmd.exe",
-                Arguments = $"/c start \"\" cmd /k codex resume {QuoteForCmd(threadId)}",
-                UseShellExecute = true,
-                WorkingDirectory = !string.IsNullOrWhiteSpace(targetPath) && Directory.Exists(targetPath)
-                    ? targetPath
-                    : Environment.CurrentDirectory
-            });
-            return true;
-        }
-        catch
-        {
-            return false;
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Directory.Exists(targetPath) ? targetPath : Environment.CurrentDirectory,
+                Arguments = $"/c \"\"{npmCmd}\" app {QuoteForCmd(targetPath)}\""
+            };
         }
     }
 
     private static string QuoteForCmd(string value)
         => $"\"{value.Replace("\"", "\"\"")}\"";
 
-    public sealed class SignalPulseEventArgs : EventArgs
+    private static string QuoteForProcess(string value)
+        => $"\"{value.Replace("\"", "\\\"")}\"";
+
+    private bool ShouldAnimateSignal(ProjectSignal signal)
     {
-        public SignalPulseEventArgs(ProjectSignal signal, TimeSpan duration)
+        if (_alertBounceActive && signal is ProjectSignal.Permission or ProjectSignal.Completed)
         {
-            Signal = signal;
-            Duration = duration;
+            return true;
         }
 
-        public ProjectSignal Signal { get; }
-        public TimeSpan Duration { get; }
+        return signal switch
+        {
+            ProjectSignal.Thinking => true,
+            ProjectSignal.Working => true,
+            ProjectSignal.ToolDone => true,
+            ProjectSignal.Attention => true,
+            ProjectSignal.Blocked => true,
+            ProjectSignal.Stale => true,
+            _ => false
+        };
     }
 
     private static ProjectStatusSnapshot AggregateProjectStatus(IEnumerable<ProjectStatusSnapshot> projects)

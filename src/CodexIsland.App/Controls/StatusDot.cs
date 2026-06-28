@@ -18,6 +18,20 @@ public sealed class StatusDot : FrameworkElement
             typeof(StatusDot),
             new FrameworkPropertyMetadata(ProjectSignal.Ready, FrameworkPropertyMetadataOptions.AffectsRender, OnSignalChanged));
 
+    public static readonly DependencyProperty AnimateProperty =
+        DependencyProperty.Register(
+            nameof(Animate),
+            typeof(bool),
+            typeof(StatusDot),
+            new FrameworkPropertyMetadata(true, FrameworkPropertyMetadataOptions.AffectsRender, OnSignalChanged));
+
+    public static readonly DependencyProperty ForceFastBlinkProperty =
+        DependencyProperty.Register(
+            nameof(ForceFastBlink),
+            typeof(bool),
+            typeof(StatusDot),
+            new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsRender, OnSignalChanged));
+
     private readonly DispatcherTimer _timer = new();
     private bool _blinkOn = true;
 
@@ -37,6 +51,18 @@ public sealed class StatusDot : FrameworkElement
         set => SetValue(SignalProperty, value);
     }
 
+    public bool Animate
+    {
+        get => (bool)GetValue(AnimateProperty);
+        set => SetValue(AnimateProperty, value);
+    }
+
+    public bool ForceFastBlink
+    {
+        get => (bool)GetValue(ForceFastBlinkProperty);
+        set => SetValue(ForceFastBlinkProperty, value);
+    }
+
     protected override WpfSize MeasureOverride(WpfSize availableSize) => new(16, 16);
 
     protected override void OnRender(DrawingContext dc)
@@ -53,7 +79,7 @@ public sealed class StatusDot : FrameworkElement
             _ => "#8E8E93"
         };
 
-        var opacity = UsesBlink(Signal) ? (_blinkOn ? 1 : 0.28) : 1;
+        var opacity = Animate && (ForceFastBlink || UsesBlink(Signal)) ? (_blinkOn ? 1 : 0.28) : 1;
         var brush = new SolidColorBrush((MediaColor)MediaColorConverter.ConvertFromString(color)) { Opacity = opacity };
         brush.Freeze();
         var center = new WpfPoint(ActualWidth / 2, ActualHeight / 2);
@@ -70,9 +96,9 @@ public sealed class StatusDot : FrameworkElement
     {
         _timer.Stop();
         _blinkOn = true;
-        if (UsesBlink(Signal))
+        if (Animate && (ForceFastBlink || UsesBlink(Signal)))
         {
-            _timer.Interval = Signal is ProjectSignal.Thinking or ProjectSignal.Blocked or ProjectSignal.Permission
+            _timer.Interval = ForceFastBlink || Signal is ProjectSignal.Thinking or ProjectSignal.Blocked or ProjectSignal.Permission
                 ? TimeSpan.FromMilliseconds(260)
                 : TimeSpan.FromMilliseconds(760);
             _timer.Start();

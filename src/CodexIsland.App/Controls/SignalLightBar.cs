@@ -26,6 +26,13 @@ public sealed class SignalLightBar : FrameworkElement
             typeof(SignalLightBar),
             new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsRender, OnSignalChanged));
 
+    public static readonly DependencyProperty AnimateProperty =
+        DependencyProperty.Register(
+            nameof(Animate),
+            typeof(bool),
+            typeof(SignalLightBar),
+            new FrameworkPropertyMetadata(true, FrameworkPropertyMetadataOptions.AffectsRender, OnSignalChanged));
+
     private readonly DispatcherTimer _timer = new();
     private bool _blinkOn = true;
 
@@ -49,6 +56,12 @@ public sealed class SignalLightBar : FrameworkElement
     {
         get => (bool)GetValue(ForceFastBlinkProperty);
         set => SetValue(ForceFastBlinkProperty, value);
+    }
+
+    public bool Animate
+    {
+        get => (bool)GetValue(AnimateProperty);
+        set => SetValue(AnimateProperty, value);
     }
 
     protected override WpfSize MeasureOverride(WpfSize availableSize) => new(110, 34);
@@ -86,7 +99,13 @@ public sealed class SignalLightBar : FrameworkElement
 
     private double ActiveOpacity(ProjectSignal signal)
     {
-        return BlinkEffectFor(signal) == BlinkEffect.Steady ? 1 : (_blinkOn ? 1 : 0.24);
+        if (!Animate)
+        {
+            return 1;
+        }
+
+        var effect = ForceFastBlink ? BlinkEffect.Fast : BlinkEffectFor(signal);
+        return effect == BlinkEffect.Steady ? 1 : (_blinkOn ? 1 : 0.24);
     }
 
     private void UpdateTimer()
@@ -94,12 +113,12 @@ public sealed class SignalLightBar : FrameworkElement
         _timer.Stop();
         _blinkOn = true;
         var effect = ForceFastBlink ? BlinkEffect.Fast : BlinkEffectFor(Signal);
-        if (effect == BlinkEffect.Fast)
+        if (Animate && effect == BlinkEffect.Fast)
         {
             _timer.Interval = TimeSpan.FromMilliseconds(320);
             _timer.Start();
         }
-        else if (effect == BlinkEffect.Slow)
+        else if (Animate && effect == BlinkEffect.Slow)
         {
             _timer.Interval = TimeSpan.FromMilliseconds(900);
             _timer.Start();

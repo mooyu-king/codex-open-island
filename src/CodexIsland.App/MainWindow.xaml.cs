@@ -16,7 +16,6 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _projectRefreshTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly DispatcherTimer _quotaRefreshTimer = new() { Interval = TimeSpan.FromSeconds(45) };
     private readonly DispatcherTimer _fadeTimer = new() { Interval = TimeSpan.FromSeconds(12) };
-    private readonly DispatcherTimer _bounceStopTimer = new();
     private readonly Forms.NotifyIcon _notifyIcon;
     private bool _isExitRequested;
     private bool _isBouncing;
@@ -26,7 +25,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _viewModel = new MainViewModel(new CodexQuotaService(), new LocalProjectSignalService());
         DataContext = _viewModel;
-        _viewModel.PulseRequested += (_, e) => StartTransientBounce(e.Duration);
+        _viewModel.PersistentBounceRequested += (_, _) => StartPersistentBounce();
         _viewModel.BounceAcknowledged += (_, _) => StopPersistentBounce();
 
         _projectRefreshTimer.Tick += async (_, _) => await _viewModel.RefreshProjectAsync().ConfigureAwait(true);
@@ -35,11 +34,6 @@ public partial class MainWindow : Window
         {
             _fadeTimer.Stop();
             Opacity = 0.42;
-        };
-        _bounceStopTimer.Tick += (_, _) =>
-        {
-            _bounceStopTimer.Stop();
-            StopPersistentBounce();
         };
 
         _notifyIcon = CreateTrayIcon();
@@ -129,6 +123,10 @@ public partial class MainWindow : Window
             if (_viewModel.IsExpanded is false)
             {
                 _viewModel.IsExpanded = true;
+            }
+            if (_isBouncing)
+            {
+                _viewModel.AcknowledgeBounce();
             }
         });
     }
@@ -233,6 +231,10 @@ public partial class MainWindow : Window
     {
         _fadeTimer.Stop();
         Opacity = 1;
+        if (_isBouncing)
+        {
+            _viewModel.AcknowledgeBounce();
+        }
     }
 
     private void Window_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
@@ -259,50 +261,48 @@ public partial class MainWindow : Window
         PinButton.ToolTip = Topmost ? "Always on top (on)" : "Always on top (off)";
     }
 
-    private void StartTransientBounce(TimeSpan totalDuration)
+    private void StartPersistentBounce()
     {
-        _bounceStopTimer.Stop();
-        _bounceStopTimer.Interval = totalDuration;
-
-        if (!_isBouncing)
+        if (IsMouseOver)
         {
-            _isBouncing = true;
-
-            // Pop the island to front.
-            Dispatcher.Invoke(() =>
-            {
-                Topmost = true;
-                Show();
-                WindowState = WindowState.Normal;
-                Activate();
-            });
-
-            var ease = new BackEase { Amplitude = 0.28, EasingMode = EasingMode.EaseOut };
-            var duration = TimeSpan.FromMilliseconds(420);
-            var scaleX = new DoubleAnimation(1.0, 1.058, duration)
-            {
-                EasingFunction = ease,
-                AutoReverse = true,
-                RepeatBehavior = RepeatBehavior.Forever
-            };
-            var scaleY = new DoubleAnimation(1.0, 1.058, duration)
-            {
-                EasingFunction = ease,
-                AutoReverse = true,
-                RepeatBehavior = RepeatBehavior.Forever
-            };
-            IslandScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, scaleX);
-            IslandScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, scaleY);
+            _viewModel.AcknowledgeBounce();
+            return;
         }
 
-        _bounceStopTimer.Start();
+        if (_isBouncing) return;
+
+        _isBouncing = true;
+
+        Dispatcher.Invoke(() =>
+        {
+            Topmost = true;
+            Show();
+            WindowState = WindowState.Normal;
+            Activate();
+        });
+
+        var ease = new BackEase { Amplitude = 0.28, EasingMode = EasingMode.EaseOut };
+        var duration = TimeSpan.FromMilliseconds(420);
+        var scaleX = new DoubleAnimation(1.0, 1.058, duration)
+        {
+            EasingFunction = ease,
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever
+        };
+        var scaleY = new DoubleAnimation(1.0, 1.058, duration)
+        {
+            EasingFunction = ease,
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever
+        };
+        IslandScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, scaleX);
+        IslandScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, scaleY);
     }
 
     private void StopPersistentBounce()
     {
         if (!_isBouncing) return;
         _isBouncing = false;
-        _bounceStopTimer.Stop();
 
         IslandScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, null);
         IslandScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, null);

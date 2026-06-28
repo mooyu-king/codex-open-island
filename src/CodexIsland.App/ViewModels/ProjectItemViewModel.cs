@@ -5,6 +5,8 @@ namespace CodexIsland.App.ViewModels;
 public sealed record ProjectItemViewModel(
     string Title,
     ProjectSignal Signal,
+    bool AnimateStatus,
+    bool ForceFastBlink,
     string Detail,
     string ActionText,
     string ToolTipText,
