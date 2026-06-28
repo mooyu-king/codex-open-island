@@ -148,7 +148,7 @@ public sealed class SignalLightBar : FrameworkElement
     {
         return signal switch
         {
-            ProjectSignal.Thinking or ProjectSignal.Blocked or ProjectSignal.Permission => BlinkEffect.Fast,
+            ProjectSignal.Thinking or ProjectSignal.Blocked or ProjectSignal.Permission or ProjectSignal.Completed => BlinkEffect.Fast,
             ProjectSignal.Working or ProjectSignal.ToolDone or ProjectSignal.Attention or ProjectSignal.Stale => BlinkEffect.Slow,
             _ => BlinkEffect.Steady
         };
