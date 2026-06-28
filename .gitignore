@@ -20,3 +20,6 @@ Desktop.ini
 # Temp
 *.tmp
 *.log
+
+# Release packages (too large for git, upload via GitHub Releases)
+artifacts/release/
